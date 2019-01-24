@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import pyredner.transform as transform
 
+
 class Camera:
     """
         redner supports a perspective camera and a fisheye camera.
@@ -17,35 +18,52 @@ class Camera:
             up (length 3 float tensor): the up vector of the camera
             fov (length 1 float tensor): the field of view of the camera in angle, 
                                          no effect if the camera is a fisheye camera
+            fx (length 1 float tensor): focal length in x
+            fy (length 1 float tensor): focal length in y
+            ox (length 1 float tensor): optical center in x
+            oy (length 1 float tensor): optical center in y
             clip_near (float): the near clipping plane of the camera, need to > 0
             resolution (length 2 tuple): the size of the output image in (width, height)
             fisheye (bool): whether the camera is a fisheye camera.
+            pinhole (bool): whether camera uses a pinhole model
     """
+
     def __init__(self,
                  position,
                  look_at,
                  up,
                  fov,
+                 fx,
+                 fy,
+                 ox,
+                 oy,
                  clip_near,
                  resolution,
-                 fisheye = False):
-        assert(position.dtype == torch.float32)
-        assert(len(position.shape) == 1 and position.shape[0] == 3)
-        assert(look_at.dtype == torch.float32)
-        assert(len(look_at.shape) == 1 and look_at.shape[0] == 3)
-        assert(up.dtype == torch.float32)
-        assert(len(up.shape) == 1 and up.shape[0] == 3)
-        assert(fov.dtype == torch.float32)
-        assert(len(fov.shape) == 1 and fov.shape[0] == 1)
-        assert(isinstance(clip_near, float))
+                 fisheye=False,
+                 pinhole=False):
+        assert (position.dtype == torch.float32)
+        assert (len(position.shape) == 1 and position.shape[0] == 3)
+        assert (look_at.dtype == torch.float32)
+        assert (len(look_at.shape) == 1 and look_at.shape[0] == 3)
+        assert (up.dtype == torch.float32)
+        assert (len(up.shape) == 1 and up.shape[0] == 3)
+        assert (fov.dtype == torch.float32)
+        assert (len(fov.shape) == 1 and fov.shape[0] == 1)
+        assert (isinstance(clip_near, float))
+        assert not (fisheye and pinhole)
 
         self.position = position
         self.look_at = look_at
         self.up = up
         self.fov = fov
+        self.fx = fx
+        self.fy = fy
+        self.ox = ox
+        self.oy = oy
         self.cam_to_world = transform.gen_look_at_matrix(position, look_at, up)
         self.world_to_cam = torch.inverse(self.cam_to_world).contiguous()
         self.fov_factor = torch.tan(transform.radians(0.5 * fov))
         self.clip_near = clip_near
         self.resolution = resolution
         self.fisheye = fisheye
+        self.pinhole = pinhole

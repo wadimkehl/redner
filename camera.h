@@ -7,7 +7,10 @@
 #include "transform.h"
 #include "ptr.h"
 
-struct Camera {
+#define WADIM_DEBUG true
+
+struct Camera
+{
     Camera() {}
 
     Camera(int width,
@@ -15,71 +18,97 @@ struct Camera {
            ptr<float> cam_to_world,
            ptr<float> world_to_cam,
            float fov_factor,
+           float fx, float fy, float ox, float oy,
            float clip_near,
-           bool fisheye)
+           bool fisheye,
+           bool pinhole)
         : width(width),
           height(height),
           cam_to_world(cam_to_world.get()),
           world_to_cam(inverse(this->cam_to_world)),
           fov_factor(fov_factor),
+          fx(fx), fy(fy), ox(ox), oy(oy),
           clip_near(clip_near),
-          fisheye(fisheye) {}
+          fisheye(fisheye),
+          pinhole(pinhole) {}
 
     int width, height;
     Matrix4x4 cam_to_world;
     Matrix4x4 world_to_cam;
     float fov_factor;
+    float fx, fy, ox, oy;
     float clip_near;
-    bool fisheye;
+    bool fisheye, pinhole;
 };
 
-struct DCamera {
+struct DCamera
+{
     DCamera() {}
     DCamera(ptr<float> cam_to_world,
             ptr<float> world_to_cam,
-            ptr<float> fov_factor)
+            ptr<float> fov_factor,
+            ptr<float> fx,
+            ptr<float> fy,
+            ptr<float> ox,
+            ptr<float> oy)
         : cam_to_world(cam_to_world.get()),
           world_to_cam(world_to_cam.get()),
-          fov_factor(fov_factor.get()) {}
+          fov_factor(fov_factor.get()),
+          fx(fx.get()),
+          fy(fy.get()),
+          ox(ox.get()),
+          oy(oy.get()) {}
 
     float *cam_to_world;
     float *world_to_cam;
     float *fov_factor;
+    float *fx, *fy, *ox, *oy;
 };
 
-struct DCameraInst {
+struct DCameraInst
+{
     Matrix4x4 cam_to_world = Matrix4x4();
     Matrix4x4 world_to_cam = Matrix4x4();
     float fov_factor = 0.f;
+    float fx = 0.f, fy = 0.f, ox = 0.f, oy = 0.f;
 
-    DEVICE inline DCameraInst operator+(const DCameraInst &other) const {
+    DEVICE inline DCameraInst operator+(const DCameraInst &other) const
+    {
         return DCameraInst{cam_to_world + other.cam_to_world,
                            world_to_cam + other.world_to_cam,
-                           fov_factor + other.fov_factor};
+                           fov_factor + other.fov_factor,
+                           fx + other.fx,
+                           fy + other.fy,
+                           ox + other.ox,
+                           oy + other.oy};
     }
 };
 
 template <typename T>
-struct TCameraSample {
+struct TCameraSample
+{
     TVector2<T> xy;
 };
 
 using CameraSample = TCameraSample<Real>;
 
 DEVICE
-inline
-Ray sample_primary(const Camera &camera,
-                   const Vector2 &screen_pos) {
-    if (camera.fisheye) {
+inline Ray sample_primary(const Camera &camera,
+                          const Vector2 &screen_pos)
+{
+
+    if (camera.fisheye)
+    {
         // Equi-angular projection
         auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
         // x, y to polar coordinate
         auto x = 2.f * (screen_pos.x - 0.5f);
         auto y = 2.f * (screen_pos.y - 0.5f);
-        if (x * x + y * y > 1.f) {
+        if (x * x + y * y > 1.f)
+        {
             return Ray{Vector3{0, 0, 0}, Vector3{0, 0, 0}};
         }
-        auto r = sqrt(x*x + y*y);
+        auto r = sqrt(x * x + y * y);
         auto phi = atan2(y, x);
         // polar coordinate to spherical, map r to angle through polynomial
         auto theta = r * Real(M_PI / 2);
@@ -91,7 +120,24 @@ Ray sample_primary(const Camera &camera,
         auto n_dir = normalize(dir);
         auto world_dir = xfm_vector(camera.cam_to_world, n_dir);
         return Ray{org, world_dir};
-    } else {
+    }
+    else if (camera.pinhole)
+    {
+        // Standard pinhole projection using intrinsics
+        auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
+
+        // Screen coordinates [0, 1] to metric rays
+        auto dir = Vector3{(screen_pos[0] - camera.ox) / camera.fx,
+                           -(screen_pos[1] - camera.oy) / camera.fy, Real(1)};
+        auto n_dir = normalize(dir);
+        auto world_dir = xfm_vector(camera.cam_to_world, n_dir);
+        // if (WADIM_DEBUG)
+        //     printf("sample_primary: %f %f - %f %f %f \n", screen_pos[0], screen_pos[1], world_dir[0], world_dir[1], world_dir[2]);
+
+        return Ray{org, world_dir};
+    }
+    else
+    {
         // Linear projection
         auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
         // [0, 1] x [0, 1] -> [-1, 1] x [1, -1]/aspect_ratio
@@ -100,8 +146,12 @@ Ray sample_primary(const Camera &camera,
                            (screen_pos[1] - 0.5f) * (-2.f) / aspect_ratio};
         // Assume film at z=1, thus w=tan(fov), h=tan(fov) / aspect_ratio
         auto dir = Vector3{camera.fov_factor * ndc[0], camera.fov_factor * ndc[1], Real(1)};
+
         auto n_dir = normalize(dir);
         auto world_dir = xfm_vector(camera.cam_to_world, n_dir);
+        if (WADIM_DEBUG)
+            printf("sample_primary: %f %f - %f %f %f \n", screen_pos[0], screen_pos[1], world_dir[0], world_dir[1], world_dir[2]);
+
         return Ray{org, world_dir};
     }
 }
@@ -110,17 +160,20 @@ DEVICE
 inline void d_sample_primary_ray(const Camera &camera,
                                  const Vector2 &screen_pos,
                                  const DRay &d_ray,
-                                 DCameraInst &d_camera) {
-    if (camera.fisheye) {
+                                 DCameraInst &d_camera)
+{
+    if (camera.fisheye)
+    {
         // Equi-angular projection
         // auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
         // x, y to polar coordinate
         auto x = 2.f * (screen_pos[0] - 0.5f);
         auto y = 2.f * (screen_pos[1] - 0.5f);
-        if (x * x + y * y > 1.f) {
+        if (x * x + y * y > 1.f)
+        {
             return;
         }
-        auto r = sqrt(x*x + y*y);
+        auto r = sqrt(x * x + y * y);
         auto phi = atan2(y, x);
         // polar coordinate to spherical, map r to angle through polynomial
         auto theta = r * Real(M_PI) / 2.f;
@@ -145,7 +198,42 @@ inline void d_sample_primary_ray(const Camera &camera,
         auto cam_org = Vector3{0, 0, 0};
         d_xfm_point(camera.cam_to_world, Vector3{0, 0, 0}, d_org,
                     d_camera.cam_to_world, cam_org);
-    } else {
+    }
+    else if (camera.pinhole)
+    {
+        // Standard pinhole projection using intrinsics
+        //auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
+
+        // Screen coordinates [0, 1] to metric rays
+        auto dir = Vector3{(screen_pos[0] - camera.ox) / camera.fx,
+                           -(screen_pos[1] - camera.oy) / camera.fy, Real(1)};
+        auto n_dir = normalize(dir);
+
+        auto d_org = d_ray.org;
+        auto d_world_dir = d_ray.dir;
+        auto d_n_dir = Vector3{0, 0, 0};
+        d_xfm_vector(camera.cam_to_world, n_dir, d_world_dir,
+                     d_camera.cam_to_world, d_n_dir);
+        auto d_dir = d_normalize(dir, d_n_dir);
+
+        //printf("d_dir: %f %f %f \n", d_dir[0], d_dir[1], d_dir[2]);
+
+        auto fx = camera.fx, fy = camera.fy, ox = camera.ox, oy = camera.oy;
+
+        d_camera.fx += d_dir[0] * -(-ox + screen_pos[0]) / square(camera.fx);
+        d_camera.fy += d_dir[1] * -(oy - screen_pos[1]) / square(camera.fy);
+        d_camera.ox += d_dir[0] * -(1 / fx);
+        d_camera.oy += d_dir[1] * +(1 / fy);
+
+        // if (WADIM_DEBUG)
+        //     printf("d_sample_primary: %f %f %f %f \n", d_camera.fx, d_camera.fy, d_camera.ox, d_camera.oy);
+
+        auto d_cam_org = Vector3{0, 0, 0};
+        d_xfm_point(camera.cam_to_world, Vector3{0, 0, 0}, d_org,
+                    d_camera.cam_to_world, d_cam_org);
+    }
+    else
+    {
         // Linear projection
         // auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
         // [0, 1] x [0, 1] -> [-1, 1] x [1, -1]/aspect_ratio
@@ -173,6 +261,10 @@ inline void d_sample_primary_ray(const Camera &camera,
         d_camera.fov_factor += d_dir[0] * ndc[0];
         d_camera.fov_factor += d_dir[1] * ndc[1];
         // org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0})
+        if (WADIM_DEBUG)
+
+            printf("d_sample_primary: %f \n", d_camera.fov_factor);
+
         auto d_cam_org = Vector3{0, 0, 0};
         d_xfm_point(camera.cam_to_world, Vector3{0, 0, 0}, d_org,
                     d_camera.cam_to_world, d_cam_org);
@@ -187,9 +279,12 @@ void sample_primary_rays(const Camera &cam,
 
 template <typename T>
 DEVICE
-TVector2<T> camera_to_screen(const Camera &camera,
-                             const TVector3<T> &pt) {
-    if (camera.fisheye) {
+    TVector2<T>
+    camera_to_screen(const Camera &camera,
+                     const TVector3<T> &pt)
+{
+    if (camera.fisheye)
+    {
         // Equi-angular projection
         auto dir = normalize(pt);
         auto cos_theta = dir[2];
@@ -199,23 +294,40 @@ TVector2<T> camera_to_screen(const Camera &camera,
         auto x = 0.5f * (-r * cos(phi) + 1.f);
         auto y = 0.5f * (-r * sin(phi) + 1.f);
         return TVector2<T>{x, y};
-    } else {
+    }
+    else if (camera.pinhole)
+    {
+        // Standard pinhole projection using intrinsics and division by z
+        // 3D world position to normalized screen [0, 1] x [0, 1]
+        auto x = ((camera.ox + pt[0] * camera.fx) / pt[2]);
+        auto y = ((camera.oy - pt[1] * camera.fy) / pt[2]);
+        // if (WADIM_DEBUG)
+        //     printf("camera_to_screen: %f %f %f - %f %f\n", pt[0], pt[1], pt[2], x, y);
+        return TVector2<T>{x, y};
+    }
+    else
+    {
         // Linear projection
         auto aspect_ratio = Real(camera.height) / Real(camera.width);
         auto x = (pt[0] / (pt[2] * camera.fov_factor) + 1.f) * 0.5f;
         auto y = (-pt[1] / (pt[2] * camera.fov_factor * aspect_ratio) + 1.f) * 0.5f;
+        if (WADIM_DEBUG)
+
+            printf("camera_to_screen: %f %f %f - %f %f\n", pt[0], pt[1], pt[2], x, y);
+
         return TVector2<T>{x, y};
     }
 }
 
 template <typename T>
-DEVICE
-inline void d_camera_to_screen(const Camera &camera,
-                               const TVector3<T> &pt,
-                               T dx, T dy,
-                               DCameraInst &d_camera,
-                               TVector3<T> &d_pt) {
-    if (camera.fisheye) {
+DEVICE inline void d_camera_to_screen(const Camera &camera,
+                                      const TVector3<T> &pt,
+                                      T dx, T dy,
+                                      DCameraInst &d_camera,
+                                      TVector3<T> &d_pt)
+{
+    if (camera.fisheye)
+    {
         auto dir = normalize(pt);
         auto phi = atan2(dir[1], dir[0]);
         auto theta = acos(dir[2]);
@@ -232,13 +344,33 @@ inline void d_camera_to_screen(const Camera &camera,
         // phi = atan2(dir[1], dir[0])
         auto atan2_tmp = dir[0] * dir[0] + dir[1] * dir[1];
         auto ddir0 = -dphi * dir[1] / atan2_tmp;
-        auto ddir1 =  dphi * dir[0] / atan2_tmp;
+        auto ddir1 = dphi * dir[0] / atan2_tmp;
         // cos_theta = dir[2]
         auto ddir2 = d_cos_theta;
         // Backprop dir = normalize(pt);
         auto ddir = Vector3{ddir0, ddir1, ddir2};
         d_pt += d_normalize(pt, ddir);
-    } else {
+    }
+    else if (camera.pinhole)
+    {
+        //auto dx = Real(1), dy = Real(1);
+        auto X = pt[0], Y = pt[1], Z = pt[2];
+        auto fx = camera.fx, fy = camera.fy;
+
+        d_camera.fx += dx * X / Z;
+        d_camera.fy -= dy * Y / Z;
+        d_camera.ox += dx;
+        d_camera.oy += dy;
+        d_pt[0] += dx * fx / Z;
+        d_pt[1] -= dy * fy / Z;
+        d_pt[2] -= dx * (X * fx) / square(Z);
+        d_pt[2] += dy * (Y * fy) / square(Z);
+
+        if (WADIM_DEBUG)
+            printf("d_camera_to_screen: %f %f - %f %f - %f %f %f\n", dx, dy, d_camera.fx, d_camera.fy, d_pt[0], d_pt[1], d_pt[2]);
+    }
+    else
+    {
         auto aspect_ratio = Real(camera.height) / Real(camera.width);
         // x = 0.5 * pt[0] / (pt[2] * camera.fov_factor) + 0.5
         d_pt[0] += ((dx * 0.5f) / (pt[2] * camera.fov_factor));
@@ -248,33 +380,40 @@ inline void d_camera_to_screen(const Camera &camera,
 
         // y = (-pt[1] / (pt[2] * camera.fov_factor * aspect_ratio) + 1.f) * 0.5f
         d_pt[1] -= (dy * 0.5f) /
-            (pt[2] * camera.fov_factor * aspect_ratio);
+                   (pt[2] * camera.fov_factor * aspect_ratio);
         d_pt[2] += (0.5f * dy * pt[1] / (square(pt[2]) * camera.fov_factor * aspect_ratio));
         d_camera.fov_factor +=
             (0.5f * dy * pt[1] / (pt[2] * square(camera.fov_factor) * aspect_ratio));
+
+        if (WADIM_DEBUG)
+            printf("d_camera_to_screen: %f - %f %f %f\n", d_camera.fov_factor, d_pt[0], d_pt[1], d_pt[2]);
     }
 }
 
 template <typename T>
-DEVICE
-bool project(const Camera &camera,
-             const TVector3<T> &p0,
-             const TVector3<T> &p1,
-             TVector2<T> &pp0,
-             TVector2<T> &pp1) {
+DEVICE bool project(const Camera &camera,
+                    const TVector3<T> &p0,
+                    const TVector3<T> &p1,
+                    TVector2<T> &pp0,
+                    TVector2<T> &pp1)
+{
     auto p0_local = xfm_point(camera.world_to_cam, p0);
     auto p1_local = xfm_point(camera.world_to_cam, p1);
-    if (p0_local[2] < camera.clip_near && p1_local[2] < camera.clip_near) {
+    if (p0_local[2] < camera.clip_near && p1_local[2] < camera.clip_near)
+    {
         return false;
     }
     // clip against z = clip_near
-    if (p0_local[2] < camera.clip_near) {
+    if (p0_local[2] < camera.clip_near)
+    {
         // a ray from p1 to p0
         auto dir = p0_local - p1_local;
         // intersect with plane z = clip_near
         auto t = -(p1_local[2] - camera.clip_near) / dir[2];
         p0_local = p1_local + t * dir;
-    } else if (p1_local[2] < camera.clip_near) {
+    }
+    else if (p1_local[2] < camera.clip_near)
+    {
         // a ray from p1 to p0
         auto dir = p1_local - p0_local;
         // intersect with plane z = clip_near
@@ -295,22 +434,27 @@ inline void d_project(const Camera &camera,
                       Real dp1x, Real dp1y,
                       DCameraInst &d_camera,
                       Vector3 &d_p0,
-                      Vector3 &d_p1) {
+                      Vector3 &d_p1)
+{
     auto p0_local = xfm_point(camera.world_to_cam, p0);
     auto p1_local = xfm_point(camera.world_to_cam, p1);
-    if (p0_local[2] < camera.clip_near && p1_local[2] < camera.clip_near) {
+    if (p0_local[2] < camera.clip_near && p1_local[2] < camera.clip_near)
+    {
         return;
     }
     auto clipped_p0_local = p0_local;
     auto clipped_p1_local = p1_local;
     // clip against z = clip_near
-    if (p0_local[2] < camera.clip_near) {
+    if (p0_local[2] < camera.clip_near)
+    {
         // a ray from p1 to p0
         auto dir = p0_local - p1_local;
         // intersect with plane z = clip_near
         auto t = -(p1_local[2] - camera.clip_near) / dir[2];
         clipped_p0_local = p1_local + t * dir;
-    } else if (p1_local[2] < camera.clip_near) {
+    }
+    else if (p1_local[2] < camera.clip_near)
+    {
         // a ray from p1 to p0
         auto dir = p1_local - p0_local;
         // intersect with plane z = clip_near
@@ -318,19 +462,22 @@ inline void d_project(const Camera &camera,
         clipped_p1_local = p0_local + t * dir;
     }
 
+    //printf("d_project: %f %f - %f %f\n", dp0x, dp0y, dp1x, dp1y);
+
     // p0' = project_local(camera, clipped_p0_local)
     // p1' = project_local(camera, clipped_p1_local)
     auto dclipped_p0_local = Vector3{0, 0, 0};
     auto dclipped_p1_local = Vector3{0, 0, 0};
     d_camera_to_screen(camera, clipped_p0_local,
-        dp0x, dp0y, d_camera, dclipped_p0_local);
+                       dp0x, dp0y, d_camera, dclipped_p0_local);
     d_camera_to_screen(camera, clipped_p1_local,
-        dp1x, dp1y, d_camera, dclipped_p1_local);
+                       dp1x, dp1y, d_camera, dclipped_p1_local);
 
     auto dp0_local = Vector3{0.f, 0.f, 0.f};
     auto dp1_local = Vector3{0.f, 0.f, 0.f};
     // differentiate through clipping
-    if (p0_local[2] < camera.clip_near) {
+    if (p0_local[2] < camera.clip_near)
+    {
         auto dir = p0_local - p1_local;
         auto t = -(p1_local[2] + camera.clip_near) / dir[2];
         // clipped_p0_local = p1_local + t * dir
@@ -345,7 +492,9 @@ inline void d_project(const Camera &camera,
         dp1_local -= ddir;
         // clipped_p1_local = p1_local
         dp1_local += dclipped_p1_local;
-    } else if (p1_local[2] < camera.clip_near) {
+    }
+    else if (p1_local[2] < camera.clip_near)
+    {
         auto dir = p1_local - p0_local;
         auto t = -(p0_local[2] + camera.clip_near) / dir[2];
         // clipped_p1_local = p0_local + t * dir
@@ -360,7 +509,9 @@ inline void d_project(const Camera &camera,
         dp0_local -= ddir;
         // clipped_p0_local = p0_local
         dp0_local += dclipped_p0_local;
-    } else {
+    }
+    else
+    {
         dp0_local += dclipped_p0_local;
         dp1_local += dclipped_p1_local;
     }
@@ -372,14 +523,15 @@ inline void d_project(const Camera &camera,
 }
 
 template <typename T>
-DEVICE
-inline TVector3<T> screen_to_camera(const Camera &camera,
-                                    const TVector2<T> &screen_pos) {
-    if (camera.fisheye) {
+DEVICE inline TVector3<T> screen_to_camera(const Camera &camera,
+                                           const TVector2<T> &screen_pos)
+{
+    if (camera.fisheye)
+    {
         // x, y to polar coordinate
         auto x = 2.f * (screen_pos[0] - 0.5f);
         auto y = 2.f * (screen_pos[1] - 0.5f);
-        auto r = sqrt(x*x + y*y);
+        auto r = sqrt(x * x + y * y);
         auto phi = atan2(y, x);
         // polar coordinate to spherical, map r linearly on angle
         auto theta = r * Real(M_PI) / 2.f;
@@ -390,7 +542,19 @@ inline TVector3<T> screen_to_camera(const Camera &camera,
         auto dir = TVector3<T>{
             -cos_phi * sin_theta, -sin_phi * sin_theta, cos_theta};
         return dir;
-    } else {
+    }
+    else if (camera.pinhole)
+    {
+        // Screen coordinates [0, 1] to ray
+        auto dir = Vector3{(screen_pos[0] - camera.ox) / camera.fx,
+                           -(screen_pos[1] - camera.oy) / camera.fy, T(1)};
+        // if (WADIM_DEBUG)
+        //     printf("screen_to_camera: %f %f - %f %f %f\n", screen_pos[0], screen_pos[1], dir[0], dir[1], dir[2]);
+
+        return dir;
+    }
+    else
+    {
         // Linear projection
         // [0, 1] x [0, 1] -> [1, -1] -> [1, -1]/aspect_ratio
         auto ndc = TVector2<T>{
@@ -400,21 +564,25 @@ inline TVector3<T> screen_to_camera(const Camera &camera,
         // Assume film at z=1, thus w=tan(fov), h=tan(fov) / aspect_ratio
         auto dir = TVector3<T>{
             camera.fov_factor * ndc[0], camera.fov_factor * ndc[1], T(1)};
+        // if (WADIM_DEBUG)
+        //     printf("screen_to_camera: %f %f - %f %f %f\n", screen_pos[0], screen_pos[1], dir[0], dir[1], dir[2]);
+
         return dir;
     }
 }
 
 template <typename T>
-DEVICE
-inline void d_screen_to_camera(const Camera &camera,
-                               const TVector2<T> &screen_pos,
-                               TVector3<T> &d_x,
-                               TVector3<T> &d_y) {
-    if (camera.fisheye) {
+DEVICE inline void d_screen_to_camera(const Camera &camera,
+                                      const TVector2<T> &screen_pos,
+                                      TVector3<T> &d_x,
+                                      TVector3<T> &d_y)
+{
+    if (camera.fisheye)
+    {
         // x, y to polar coordinate
         auto x = 2.f * (screen_pos[0] - 0.5f);
         auto y = 2.f * (screen_pos[1] - 0.5f);
-        auto r = sqrt(x*x + y*y);
+        auto r = sqrt(x * x + y * y);
         auto phi = atan2(y, x);
         // polar coordinate to spherical, map r linearly on angle
         auto theta = r * Real(M_PI) / 2.f;
@@ -422,39 +590,54 @@ inline void d_screen_to_camera(const Camera &camera,
         auto cos_phi = cos(phi);
         auto sin_theta = sin(theta);
         auto cos_theta = cos(theta);
- 
+
         // d dir d screen_pos:
         auto d_dir_x_d_phi = sin_phi * sin_theta;
         auto d_dir_x_d_theta = -cos_phi * cos_theta;
         auto d_dir_y_d_phi = -cos_phi * sin_theta;
         auto d_dir_y_d_theta = -sin_phi * cos_theta;
         auto d_dir_z_d_theta = -sin_theta;
-        auto d_phi_d_x = -y / (r*r);
-        auto d_phi_d_y = x / (r*r);
+        auto d_phi_d_x = -y / (r * r);
+        auto d_phi_d_y = x / (r * r);
         auto d_theta_d_x = (float(M_PI) / 2.f) * x / r;
         auto d_theta_d_y = (float(M_PI) / 2.f) * y / r;
 
         d_x = 2.f * TVector3<T>{
-            d_dir_x_d_phi * d_phi_d_x + d_dir_x_d_theta * d_theta_d_x,
-            d_dir_y_d_phi * d_phi_d_x + d_dir_y_d_theta * d_theta_d_x,
-            d_dir_z_d_theta * d_theta_d_x};
+                        d_dir_x_d_phi * d_phi_d_x + d_dir_x_d_theta * d_theta_d_x,
+                        d_dir_y_d_phi * d_phi_d_x + d_dir_y_d_theta * d_theta_d_x,
+                        d_dir_z_d_theta * d_theta_d_x};
         d_y = 2.f * TVector3<T>{
-            d_dir_x_d_phi * d_phi_d_y + d_dir_x_d_theta * d_theta_d_y,
-            d_dir_y_d_phi * d_phi_d_y + d_dir_y_d_theta * d_theta_d_y,
-            d_dir_z_d_theta * d_theta_d_y};
-    } else {
+                        d_dir_x_d_phi * d_phi_d_y + d_dir_x_d_theta * d_theta_d_y,
+                        d_dir_y_d_phi * d_phi_d_y + d_dir_y_d_theta * d_theta_d_y,
+                        d_dir_z_d_theta * d_theta_d_y};
+    }
+    else if (camera.pinhole)
+    {
+        d_x = TVector3<T>{Real(1) / camera.fx, T(0), T(0)};
+        d_y = TVector3<T>{T(0), Real(-1) / camera.fy, T(0)};
+        // if (WADIM_DEBUG)
+        //     printf("d_screen_to_camera: %f %f - %f %f\n", screen_pos[0], screen_pos[1], d_x[0], d_y[1]);
+    }
+    else
+    {
         auto aspect_ratio = Real(camera.height) / Real(camera.width);
         d_x = TVector3<T>{T(2) * camera.fov_factor, T(0), T(0)};
         d_y = TVector3<T>{T(0), T(-2) * camera.fov_factor / aspect_ratio, T(0)};
+        if (WADIM_DEBUG)
+            printf("d_screen_to_camera: %f %f - %f %f\n", screen_pos[0], screen_pos[1], d_x[0], d_y[1]);
     }
 }
 
 DEVICE
-inline bool in_screen(const Camera &cam, const Vector2 &pt) {
-    if (!cam.fisheye) {
+inline bool in_screen(const Camera &cam, const Vector2 &pt)
+{
+    if (!cam.fisheye)
+    {
         return pt[0] >= 0.f && pt[0] < 1.f &&
                pt[1] >= 0.f && pt[1] < 1.f;
-    } else {
+    }
+    else
+    {
         auto dist_sq =
             (pt[0] - 0.5f) * (pt[0] - 0.5f) + (pt[1] - 0.5f) * (pt[1] - 0.5f);
         return dist_sq < 0.25f;

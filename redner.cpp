@@ -13,7 +13,8 @@
 
 #include <pybind11/stl.h>
 
-PYBIND11_MODULE(redner, m) {
+PYBIND11_MODULE(redner, m)
+{
     m.doc() = "Redner"; // optional module docstring
 
     py::class_<ptr<float>>(m, "float_ptr")
@@ -27,25 +28,27 @@ PYBIND11_MODULE(redner, m) {
                       ptr<float>,
                       ptr<float>,
                       float,
+                      float, float, float, float,
                       float,
-                      bool>());
+                      bool, bool>());
 
     py::class_<DCamera>(m, "DCamera")
-        .def(py::init<ptr<float>, ptr<float>, ptr<float>>());
+        .def(py::init<ptr<float>, ptr<float>, ptr<float>,
+                      ptr<float>, ptr<float>, ptr<float>, ptr<float>>());
 
     py::class_<Scene>(m, "Scene")
         .def(py::init<const Camera &,
-                      const std::vector<const Shape*> &,
-                      const std::vector<const Material*> &,
-                      const std::vector<const AreaLight*> &,
+                      const std::vector<const Shape *> &,
+                      const std::vector<const Material *> &,
+                      const std::vector<const AreaLight *> &,
                       const std::shared_ptr<const EnvironmentMap> &,
                       bool>());
 
     py::class_<DScene, std::shared_ptr<DScene>>(m, "DScene")
         .def(py::init<const DCamera &,
-                      const std::vector<DShape*> &,
-                      const std::vector<DMaterial*> &,
-                      const std::vector<DAreaLight*> &,
+                      const std::vector<DShape *> &,
+                      const std::vector<DMaterial *> &,
+                      const std::vector<DAreaLight *> &,
                       const std::shared_ptr<DEnvironmentMap> &,
                       bool>());
 
