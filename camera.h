@@ -7,7 +7,7 @@
 #include "transform.h"
 #include "ptr.h"
 
-#define WADIM_DEBUG true
+#define WADIM_DEBUG false
 
 struct Camera
 {
@@ -127,8 +127,9 @@ inline Ray sample_primary(const Camera &camera,
         auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
 
         // Screen coordinates [0, 1] to metric rays
-        auto dir = Vector3{(screen_pos[0] - camera.ox) / camera.fx,
-                           -(screen_pos[1] - camera.oy) / camera.fy, Real(1)};
+        // NOTE: we flip the y-coordinate because of handedness change
+        auto x = screen_pos[0], y = Real(1) - screen_pos[1];
+        auto dir = Vector3{(x - camera.ox) / camera.fx, (y - camera.oy) / camera.fy, Real(1)};
         auto n_dir = normalize(dir);
         auto world_dir = xfm_vector(camera.cam_to_world, n_dir);
         // if (WADIM_DEBUG)
@@ -205,8 +206,9 @@ inline void d_sample_primary_ray(const Camera &camera,
         //auto org = xfm_point(camera.cam_to_world, Vector3{0, 0, 0});
 
         // Screen coordinates [0, 1] to metric rays
-        auto dir = Vector3{(screen_pos[0] - camera.ox) / camera.fx,
-                           -(screen_pos[1] - camera.oy) / camera.fy, Real(1)};
+        // NOTE: we flip the y-coordinate because of handedness change
+        auto x = screen_pos[0], y = Real(1) - screen_pos[1];
+        auto dir = Vector3{(x - camera.ox) / camera.fx, (y - camera.oy) / camera.fy, Real(1)};
         auto n_dir = normalize(dir);
 
         auto d_org = d_ray.org;
@@ -220,8 +222,8 @@ inline void d_sample_primary_ray(const Camera &camera,
 
         auto fx = camera.fx, fy = camera.fy, ox = camera.ox, oy = camera.oy;
 
-        d_camera.fx += d_dir[0] * -(-ox + screen_pos[0]) / square(camera.fx);
-        d_camera.fy += d_dir[1] * -(oy - screen_pos[1]) / square(camera.fy);
+        d_camera.fx += d_dir[0] * -(-ox + x) / square(camera.fx);
+        d_camera.fy += d_dir[1] * -(-oy - y) / square(camera.fy);
         d_camera.ox += d_dir[0] * -(1 / fx);
         d_camera.oy += d_dir[1] * +(1 / fy);
 
@@ -298,9 +300,9 @@ DEVICE
     else if (camera.pinhole)
     {
         // Standard pinhole projection using intrinsics and division by z
-        // 3D world position to normalized screen [0, 1] x [0, 1]
-        auto x = ((camera.ox + pt[0] * camera.fx) / pt[2]);
-        auto y = ((camera.oy - pt[1] * camera.fy) / pt[2]);
+        // 3D world position to normalized screen [0, 1] x [0, 1], flipped Y
+        auto x = camera.ox + (pt[0] * camera.fx) / pt[2];
+        auto y = camera.oy - (pt[1] * camera.fy) / pt[2];
         // if (WADIM_DEBUG)
         //     printf("camera_to_screen: %f %f %f - %f %f\n", pt[0], pt[1], pt[2], x, y);
         return TVector2<T>{x, y};
@@ -366,8 +368,8 @@ DEVICE inline void d_camera_to_screen(const Camera &camera,
         d_pt[2] -= dx * (X * fx) / square(Z);
         d_pt[2] += dy * (Y * fy) / square(Z);
 
-        if (WADIM_DEBUG)
-            printf("d_camera_to_screen: %f %f - %f %f - %f %f %f\n", dx, dy, d_camera.fx, d_camera.fy, d_pt[0], d_pt[1], d_pt[2]);
+        //if (WADIM_DEBUG)
+        //    printf("d_camera_to_screen: %f %f - %f %f - %f %f %f\n", dx, dy, d_camera.fx, d_camera.fy, d_pt[0], d_pt[1], d_pt[2]);
     }
     else
     {
@@ -545,9 +547,10 @@ DEVICE inline TVector3<T> screen_to_camera(const Camera &camera,
     }
     else if (camera.pinhole)
     {
-        // Screen coordinates [0, 1] to ray
-        auto dir = Vector3{(screen_pos[0] - camera.ox) / camera.fx,
-                           -(screen_pos[1] - camera.oy) / camera.fy, T(1)};
+        // Screen coordinates [0, 1] to metric rays
+        // NOTE: we flip the y-coordinate because of handedness change
+        auto x = screen_pos[0], y = Real(1) - screen_pos[1];
+        auto dir = Vector3{(x - camera.ox) / camera.fx, (y - camera.oy) / camera.fy, Real(1)};
         // if (WADIM_DEBUG)
         //     printf("screen_to_camera: %f %f - %f %f %f\n", screen_pos[0], screen_pos[1], dir[0], dir[1], dir[2]);
 
@@ -613,8 +616,8 @@ DEVICE inline void d_screen_to_camera(const Camera &camera,
     }
     else if (camera.pinhole)
     {
-        d_x = TVector3<T>{Real(1) / camera.fx, T(0), T(0)};
-        d_y = TVector3<T>{T(0), Real(-1) / camera.fy, T(0)};
+        d_x = TVector3<T>{T(1) / camera.fx, T(0), T(0)};
+        d_y = TVector3<T>{T(0), T(-1) / camera.fy, T(0)};
         // if (WADIM_DEBUG)
         //     printf("d_screen_to_camera: %f %f - %f %f\n", screen_pos[0], screen_pos[1], d_x[0], d_y[1]);
     }
