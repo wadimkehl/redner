@@ -7,7 +7,7 @@
 #include "transform.h"
 #include "ptr.h"
 
-#define WADIM_DEBUG false
+#define WADIM_DEBUG true
 
 struct Camera
 {
@@ -355,7 +355,6 @@ DEVICE inline void d_camera_to_screen(const Camera &camera,
     }
     else if (camera.pinhole)
     {
-        //auto dx = Real(1), dy = Real(1);
         auto X = pt[0], Y = pt[1], Z = pt[2];
         auto fx = camera.fx, fy = camera.fy;
 
@@ -368,8 +367,8 @@ DEVICE inline void d_camera_to_screen(const Camera &camera,
         d_pt[2] -= dx * (X * fx) / square(Z);
         d_pt[2] += dy * (Y * fy) / square(Z);
 
-        //if (WADIM_DEBUG)
-        //    printf("d_camera_to_screen: %f %f - %f %f - %f %f %f\n", dx, dy, d_camera.fx, d_camera.fy, d_pt[0], d_pt[1], d_pt[2]);
+        if (WADIM_DEBUG)
+            printf("d_camera_to_screen: %f %f - %f %f - %f %f %f\n", dx, dy, d_camera.fx, d_camera.fy, d_pt[0], d_pt[1], d_pt[2]);
     }
     else
     {

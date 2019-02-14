@@ -5,6 +5,13 @@ project(redner VERSION 0.0.1 DESCRIPTION "Differentiable Path Tracer")
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 
 find_package(Python 3.6 COMPONENTS Development REQUIRED)
+
+set(Python_INCLUDE_DIRS "$ENV{HOME}/anaconda3/include/python3.6m")
+set(PYTHON_LIBRARY_RELEASE "$ENV{HOME}/anaconda3/lib/libpython3.6m.so")
+set(PYTHON_SITE "$ENV{HOME}/anaconda3/lib/python3.6/site-packages")
+
+
+
 find_package(CUDA 10)
 if(CUDA_FOUND)
     find_package(OptiX REQUIRED)
